@@ -1,33 +1,43 @@
-# RAG chatbot with a PII redaction guardrail
+# RAG PII Guardrail
 
-A small proof-of-concept I put together to show a pattern I keep running into with clients: they want a chatbot that can answer questions over their own documents, but they're (rightly) nervous about feeding customer data into an LLM.
-
-The usual approach is "trust the model not to leak." I don't love that. This does it the other way around — anything sensitive is stripped out *before* the model ever sees it. The LLM can't leak what it never received.
+A retrieval-augmented chatbot that redacts personally identifiable information from retrieved context before any of it reaches the language model.
 
 ## What it does
 
-The flow is simple:
+- Retrieves the most relevant chunks from a small in-memory knowledge base using TF-IDF + cosine similarity, so the demo runs fully offline with no API key.
+- Passes every retrieved chunk through a regex-based redaction layer before it is added to the prompt that would go to an LLM.
+- Detects and masks five PII types: email addresses, phone numbers, credit card numbers, SSNs, and IBANs.
+- Replaces each detected value with a typed placeholder (e.g. [EMAIL_REDACTED], [PHONE_REDACTED]) so the context stays readable but the sensitive value is gone.
+- Prints the raw retrieved text, the list of PII the guardrail caught, and the sanitized text side by side, so the redaction step is easy to audit.
 
-1. User asks a question
-2. Retrieve the most relevant chunks from the knowledge base (TF-IDF here, so it runs offline with no API key)
-3. **Run the retrieved text through a redaction step** — emails, phone numbers, credit cards, SSNs, IBANs get replaced with typed placeholders
-4. Only the cleaned context goes to the LLM
-5. You get an answer, minus the leaked PII
+## Why the order matters
 
-The redaction is plain regex, runs locally, and is deterministic — which also means it's easy to audit, unlike "we asked the model nicely."
+The guardrail sits between retrieval and generation, not after generation. Redaction happens on the retrieved context before it is ever sent to the language model call, so the model structurally cannot leak an email, phone number, credit card number, SSN, or IBAN it was never given. Swapping the offline TF-IDF retriever for a real OpenAI/Claude API call would not change this at all - the sanitized context is what gets sent either way.
 
-## Running it
+## Tech stack
+
+- Python
+- scikit-learn (TfidfVectorizer, cosine_similarity) for retrieval
+- Standard library re for PII pattern matching and redaction
+
+## Quickstart
 
 ```bash
 pip install scikit-learn
-python rag_with_guardrail.py
+python rag_with_guardrail_clean.py
 ```
 
-You'll see three example questions. One has no PII (passes through untouched), the other two have an email + phone and a credit card buried in the source docs — watch them get caught.
+The script runs three example questions against a tiny built-in knowledge base. For each question it prints the raw retrieved context, which PII types (if any) the guardrail caught, and the sanitized context that would actually be sent to the LLM.
 
-Example output for the escalation question:
+## Example output
 
 ```
+QUESTION: How do I escalate an urgent issue?
+
+GUARDRAIL caught and redacted:
+  - EMAIL: sarah.lee@acme.com
+  - PHONE: +1 415 555 0142
+
 WHAT THE LLM ACTUALLY RECEIVES (safe):
   To escalate an issue, contact the account manager Sarah Lee at
   [EMAIL_REDACTED] or call [PHONE_REDACTED].
@@ -35,10 +45,5 @@ WHAT THE LLM ACTUALLY RECEIVES (safe):
 
 ## Notes / honest caveats
 
-- The retrieval is intentionally tiny (TF-IDF). In a real build I'd swap this for proper embeddings + a vector store, but the point of this repo is the **guardrail**, not the retrieval.
-- Regex PII detection is a starting point, not a finished compliance solution. For production I usually layer in a proper NER pass for names/addresses and tune the patterns to the client's data. Regex is great for the structured stuff (cards, emails, IBANs); it's weaker on free-text names.
-- Swapping TF-IDF for a real OpenAI/Claude call doesn't change the guardrail at all — the sanitized context is what gets sent either way.
-
-## Why I built it
-
-Most "AI chatbot" work treats data safety as an afterthought. I'd rather make leaks structurally impossible than promise they won't happen. If that's the kind of thing you need built properly, that's the work I do.
+- Retrieval is intentionally tiny (TF-IDF) - the point of this repo is the guardrail, not the retrieval. A real build would use proper embeddings and a vector store.
+- Regex-based PII detection is a starting point, not a finished compliance solution. It is strong on structured data (cards, emails, IBANs) but weaker on free-text names, which would need a proper NER pass in production.
